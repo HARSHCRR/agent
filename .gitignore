@@ -23,3 +23,9 @@ data/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# C++ build artifacts
+cpp/build/
+*.o
+*.a
+*.dylib
