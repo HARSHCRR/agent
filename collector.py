@@ -193,7 +193,8 @@ def fetch_premarket_headlines(target_date: datetime.date, max_headlines: int = 6
     cutoff_time = datetime.time(9, 15)
 
     rss_feeds = [
-        ("Yahoo Finance", "https://finance.yahoo.com/news/rssindex"),
+        ("MarketWatch", "https://feeds.content.dowjones.io/public/rss/mw_topstories"),
+        ("Google Finance", "https://news.google.com/rss/search?q=Nasdaq+stock+market&hl=en-US&gl=US&ceid=US:en"),
     ]
 
     h_idx = 1
