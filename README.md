@@ -1,15 +1,14 @@
 # 🦅 Quant AI Workflow: Dual-Agent Market Debate Engine with Blind Arbitration
 
 [![Language: Python](https://img.shields.io/badge/Language-Python%203.11+-blue.svg)](https://www.python.org/)
-[![Language: C++20](https://img.shields.io/badge/Language-C%2B%2B20-orange.svg)](https://en.cppreference.com/w/cpp/20)
 [![LLM: Gemini 3.8 Flash](https://img.shields.io/badge/LLM-Gemini%203.8%20Flash-green.svg)](https://ai.google.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
 
-An autonomous **Compound AI Workflow & Multi-Agent Orchestration Engine** designed for quantitative equity regime forecasting on **NAS100 (Nasdaq 100)** prior to the US cash open (09:15 ET).
+An autonomous **Compound AI Workflow & Multi-Agent Orchestration Engine** designed for quantitative equity regime analysis on **NAS100 (Nasdaq 100)** prior to the US cash open (09:15 ET).
 
-Rather than relying on a single monolithic prompt that suffers from LLM sycophancy, position bias, and hallucinations, this system orchestrates two parallel adversarial analyst agents (**Bull vs. Bear**) across a strictly curated pre-market briefing pack, passes their structured outputs through a deterministic code-level citation firewall, and submits them to an order-randomized **Blind Judge** for objective arbitration.
+Rather than relying on a single monolithic prompt that suffers from LLM sycophancy, position bias, and ungrounded hallucinations, this system orchestrates two parallel adversarial analyst agents (**Bull vs. Bear**) across a strictly curated pre-market briefing pack, passes their structured outputs through a deterministic code-level citation firewall, and submits them to an order-randomized **Blind Judge** for objective arbitration.
 
-Implemented in both **Python (Pydantic V2 + GenAI SDK)** and **High-Performance C++20 (CMake, libcurl, SQLite3, std::async)**.
+Implemented in **Python 3.11+ (Pydantic V2 + Google GenAI SDK)** with an offline replay engine and comprehensive test harness.
 
 ---
 
@@ -35,7 +34,7 @@ Implemented in both **Python (Pydantic V2 + GenAI SDK)** and **High-Performance 
                                                ▼
                        ┌──────────────────────────────────────────────┐
                        │ Stage 3: Deterministic Citation Firewall     │
-                       │ - Verifies all cited IDs in Briefing Pack    │
+                       │ - Set-membership check of cited IDs in Pack  │
                        │ - Automated 1-Retry Loop on hallucination    │
                        │ - Safe "No-Verdict" fallback if invalid      │
                        └───────────────────────┬──────────────────────┘
@@ -44,8 +43,8 @@ Implemented in both **Python (Pydantic V2 + GenAI SDK)** and **High-Performance 
                        ┌──────────────────────────────────────────────┐
                        │ Stage 4: Blind Anonymizer & Order Shuffler   │
                        │ - Strips "BULL" / "BEAR" labels              │
-                       │ - 50/50 Coin Flip: Case X vs Case Y          │
-                       │ - Eliminates LLM positional presentation bias│
+                       │ - Random coin flip: Case X vs Case Y         │
+                       │ - Mitigates LLM positional presentation bias │
                        └───────────────────────┬──────────────────────┘
                                                │
                                                ▼
@@ -60,7 +59,7 @@ Implemented in both **Python (Pydantic V2 + GenAI SDK)** and **High-Performance 
                        ┌──────────────────────────────────────────────┐
                        │ Stage 6: Unblinder, Ledger & Telegram Alert  │
                        │ - Unblinds X/Y -> Real Market Bias           │
-                       │ - Immutable SQLite Audit Trail (verdicts.db) │
+                       │ - Append-only SQLite Ledger (verdicts.db)    │
                        │ - Actionable Telegram Alert to Bot           │
                        │ - 16:00 ET Ground-Truth Win Rate Evaluator   │
                        └──────────────────────────────────────────────┘
@@ -70,13 +69,29 @@ Implemented in both **Python (Pydantic V2 + GenAI SDK)** and **High-Performance 
 
 ## ⚡ Key Highlights
 
-* **Adversarial Debate Pattern**: Eliminates non-committal answers and single-model confirmation bias by forcing two partisan agents to dig up verifiable evidence for their assigned side.
-* **Deterministic Code Firewall**: Python & C++ AST verification ensuring that every cited ID (`PRICE`, `E1`, `Y1`, `H1`) strictly exists in the briefing pack. Rejects hallucinations programmatically.
-* **Positional Bias Mitigation (Blind Arbitration)**: Anonymizes and randomizes the order of cases (`Case X` vs `Case Y`) using high-entropy coin flips so the judge evaluates evidence quality rather than prompt order.
+* **Adversarial Debate Pattern**: Mitigates non-committal answers and single-model confirmation bias by forcing two partisan agents to dig up verifiable evidence for their assigned side.
+* **Deterministic Code Firewall**: Runtime set-membership verification ensuring that every cited ID (`PRICE`, `E1`, `Y1`, `H1`) strictly exists in the briefing pack. Rejects hallucinated citations programmatically and validates payload schemas via Pydantic V2.
+* **Positional Bias Mitigation (Blind Arbitration)**: Anonymizes and randomizes the order of cases (`Case X` vs `Case Y`) using cryptographic PRNG (`secrets.choice`) so the judge evaluates evidence quality rather than prompt order.
 * **Asymmetric Thinking Budgets**:
-  * **Analysts**: `thinking_level="low"` (1,024 tokens) for low latency and efficient information extraction.
+  * **Analysts**: `thinking_level="low"` (1,024 tokens) for low latency and focused information extraction.
   * **Judge**: `thinking_level="medium"` (2,048 tokens, $T=0.1$) for deep cross-examination and repeatable verdicts.
-* **Forward-Testing Audit Trail**: Every pre-market execution logs the raw briefing pack, analyst claims, blind mapping, and judge reasoning into a local SQLite database, automatically reconciling against actual 16:00 ET cash market returns.
+* **Append-Only SQLite Ledger**: Every pre-market execution logs the raw briefing pack, analyst claims, blind mapping, and judge reasoning into an SQLite database with triggers enforcing immutability on core decision fields.
+
+---
+
+## ⚙️ Design Notes
+
+* **Workload Characteristics**: The pipeline execution is network-bound on external LLM inference and financial API endpoints (~1.5–4.0s wall-clock time). Local data validation, shuffling, and database insertion take under 5 milliseconds.
+* **Offline Replay Mode**: The entire pipeline can execute deterministically without API keys or network calls via `--replay <path/to/pack.json>`, mocking the LLM responses for CI/CD and regression testing.
+* **Modular LLM Client Protocol**: Analysts and Judge depend on abstract protocols (`LLMClient`, `JudgeLLMClient`), allowing drop-in test doubles and multi-model evaluations.
+
+---
+
+## ⚠️ Limitations & Realism
+
+1. **Sample Size & Statistical Power**: Because this pipeline produces at most one prediction per trading day (~252 sessions/year), calculating a statistically significant win rate or Sharpe ratio requires several months of live forward testing ($N \ge 100$). Short-term win rates are statistically noisy.
+2. **No Claim of Market Edge**: LLM reasoning summarizes and stresses existing public data; this pipeline does not claim an alpha edge or predictive superiority over market baselines.
+3. **Non-Deterministic Outputs**: Even with low temperature ($T=0.1$) and fixed seeds, current commercial LLM API outputs remain non-deterministic across calls.
 
 ---
 
@@ -89,25 +104,21 @@ project_agent/
 ├── collector.py              # 09:15 ET Ingestion engine (Quotes, Macro Calendar, Headlines)
 ├── analysts.py               # Concurrent Bull & Bear adversarial engine (Gemini 3.8 Flash)
 ├── judge.py                  # Citation verification firewall, blind shuffler, and neutral judge
-├── storage.py                # SQLite3 persistent audit ledger & performance dashboard
+├── storage.py                # Append-only SQLite3 audit ledger & performance dashboard
 ├── notifier.py               # Telegram Bot API formatted alert dispatcher
-├── main.py                   # Executive CLI orchestrator (--stats, --eod, --no-telegram)
+├── main.py                   # Executive CLI orchestrator (--replay, --stats, --eod, --no-telegram)
 ├── requirements.txt          # Pinned Python dependencies
+├── pytest.ini                # Pytest configuration
 ├── .env.example              # Secrets and configuration template
-└── cpp/                      # High-Performance C++20 Implementation
-    ├── CMakeLists.txt        # Modern CMake build configuration
-    ├── include/
-    │   ├── json.hpp          # nlohmann/json compile-time serialization
-    │   ├── config.hpp        # Zero-dependency .env loader & system constants
-    │   ├── models.hpp        # Modern C++20 structs for data models
-    │   ├── http_client.hpp   # RAII-wrapped libcurl HTTP client
-    │   ├── collector.hpp     # C++ market data and economic calendar ingestion
-    │   ├── analysts.hpp      # Parallel std::async Bull & Bear agent engine
-    │   ├── judge.hpp         # Citation firewall & Mersenne Twister blind shuffler
-    │   ├── storage.hpp       # Native SQLite3 C-API ledger with prepared statements
-    │   └── notifier.hpp      # C++ Telegram alert dispatcher
-    └── src/
-        └── main.cpp          # C++20 Executive CLI orchestrator
+├── scripts/
+│   └── ablation_shuffle.py   # Empirical position-bias ablation evaluator
+└── tests/                    # Comprehensive unit tests
+    ├── conftest.py
+    ├── data/
+    │   └── sample_pack.json  # Canned briefing pack for offline replay
+    ├── test_firewall.py      # Citation validation & retry logic tests
+    ├── test_shuffler.py      # PRNG shuffler & unblinding tests
+    └── test_storage.py       # SQLite trigger & immutability tests
 ```
 
 ---
@@ -116,15 +127,11 @@ project_agent/
 
 ### 1. Environment Setup
 ```bash
-# Clone the repository
 git clone https://github.com/HARSHCRR/agent.git
 cd agent
 
-# Create and activate virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
@@ -134,7 +141,7 @@ Copy `.env.example` to `.env` and configure your API keys:
 cp .env.example .env
 ```
 Key variables:
-* `GEMINI_API_KEY`: Google Gemini API Key (defaults to automated simulated testing if omitted).
+* `GEMINI_API_KEY`: Google Gemini API Key (defaults to deterministic mock mode if omitted).
 * `FMP_API_KEY`: Financial Modeling Prep API Key (optional).
 * `TELEGRAM_BOT_TOKEN` & `TELEGRAM_CHAT_ID`: Telegram credentials for live alerts.
 
@@ -142,6 +149,9 @@ Key variables:
 ```bash
 # Run the complete live pre-market workflow
 python main.py
+
+# Run in offline replay mode with a canned briefing pack (no API key required)
+python main.py --replay tests/data/sample_pack.json --no-telegram
 
 # Run in test mode without dispatching Telegram alerts
 python main.py --no-telegram
@@ -155,38 +165,7 @@ python main.py --eod 2026-10-12
 
 ---
 
-## ⚡ Quickstart: High-Performance C++20 Engine
-
-The repository includes a complete, standalone **C++20** engine engineered for low-latency quantitative environments:
-
-### 1. Build using CMake:
-```bash
-cd cpp
-mkdir -p build && cd build
-cmake ..
-make -j4
-```
-
-### 2. Run the C++ Binary:
-```bash
-# Execute the full autonomous pre-market workflow
-./quant_agent
-
-# Run without sending Telegram alerts
-./quant_agent --no-telegram
-
-# View forward-test win-rate dashboard
-./quant_agent --stats
-
-# Record EOD ground-truth market return (e.g., +0.85% Up)
-./quant_agent --eod 2026-10-12 0.85 up
-```
-
----
-
 ## 📊 Sample Telegram Pre-Market Alert
-
-When executed prior to market open, the orchestrator dispatches an alert formatted as follows:
 
 ```text
 📊 NAS100 PRE-MARKET VERDICT | 2026-10-12
@@ -211,9 +190,35 @@ Technical stability and benign volatility index readings provide superior suppor
 
 ---
 
+## 🔬 Ablation Studies & Empirical Bias Measurement
+
+An ablation script (`scripts/ablation_shuffle.py`) measures the sensitivity of the LLM judge to presentation order (swapping `Case X` and `Case Y` on identical inputs) and computes the empirical **Verdict-Flip Rate**:
+
+```bash
+# Run ablation study across N evaluations (offline replay mode)
+python scripts/ablation_shuffle.py --n 20 --replay tests/data/sample_pack.json
+
+# Run live ablation study with real Gemini API
+python scripts/ablation_shuffle.py --n 20
+```
+
+---
+
+## 🧪 Testing & CI/CD
+
+The test suite runs automatically on every push via GitHub Actions (`.github/workflows/ci.yml`).
+
+### Running Python Tests (Pytest)
+```bash
+pytest -v
+```
+*Tests citation set-membership firewall, edge cases, retry-then-fallback path, PRNG shuffler unblinding, and SQLite append-only triggers (10 unit tests).*
+
+---
+
 ## 📈 Performance Tracking & Forward Testing
 
-Unlike toy chatbot demos, every single pre-market decision is stored in an SQLite audit ledger (`data/verdicts.db`):
+Pre-market predictions are persisted to an append-only SQLite ledger (`data/verdicts.db`), enforced via triggers preventing `DELETE` operations or alterations to pre-market fields.
 
 ```sql
 SELECT 
@@ -225,20 +230,19 @@ WHERE is_correct IS NOT NULL
 GROUP BY confidence;
 ```
 
-This allows quantitative verification of:
-1. **Directional Accuracy**: Whether the system beats baseline benchmarks like *"Always Bullish"* or *"Yesterday's Trend"*.
-2. **Confidence Calibration**: Whether *"HIGH"* confidence predictions achieve a statistically higher win rate than *"LOW"* confidence predictions.
-
 ---
 
-## 💼 Interview Talking Points & Resume Bullets
+## 📊 Forward-Test Results
 
-### Suggested Resume Description:
-* **Quant AI Workflow Orchestrator (C++20, Python, Gemini 3.8 Flash, libcurl, SQLite3)**:
-  * *Architected an autonomous multi-agent quantitative workflow orchestrating dual adversarial LLM analysts (Bull vs. Bear) and a neutral blind arbitrator for daily Nasdaq 100 regime classification.*
-  * *Eliminated presentation position bias and LLM sycophancy by implementing randomized blind arbitration (`Case X` vs `Case Y`) and low-temperature cross-examination.*
-  * *Engineered a deterministic citation firewall in Python and modern C++20, enforcing strict compile-time and runtime contracts that reject hallucinated macro data.*
-  * *Developed a forward-testing audit ledger in SQLite with automated 16:00 ET ground-truth matching and real-time Telegram webhook dispatching.*
+> *Note: This table tracks forward-tested pre-market predictions evaluated against 16:00 ET market closes.*
+
+| Metric | System Result | Always Bullish Baseline | Yesterday's Direction Baseline | Status |
+| :--- | :---: | :---: | :---: | :---: |
+| **Total Evaluated ($N$)** | — | — | — | *Not yet populated ($N < 100$)* |
+| **Overall Win Rate** | — | — | — | *Not yet populated* |
+| **High Confidence Win Rate** | — | — | — | *Not yet populated* |
+| **Medium Confidence Win Rate**| — | — | — | *Not yet populated* |
+| **Low Confidence Win Rate** | — | — | — | *Not yet populated* |
 
 ---
 

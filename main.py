@@ -7,9 +7,11 @@ from typing import Any, Dict, Optional
 import pytz
 
 from config import MARKET_TIMEZONE
+from models import BriefingPack
 from collector import build_pack
-from analysts import run_dual_analysts
+from analysts import run_dual_analysts, MockLLMClient
 from judge import (
+    MockJudgeLLMClient,
     verify_cases_with_retry,
     anonymize_and_randomize,
     evaluate_cases_blind,
@@ -28,6 +30,7 @@ logger = logging.getLogger("WorkflowOrchestrator")
 def run_workflow(
     target_date_str: Optional[str] = None,
     send_telegram: bool = True,
+    replay_pack_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Executes the complete 5-stage Compound AI Workflow:
@@ -48,18 +51,27 @@ def run_workflow(
     logger.info(f"=== Starting Autonomous Pre-Market Workflow for {date_str} ===")
 
     # STAGE 1: Collect Briefing Pack
-    logger.info("[Stage 1/6] Ingesting market metrics, economic calendar, and news...")
-    pack = build_pack(target_date)
+    if replay_pack_path:
+        logger.info(f"[Stage 1/6] Replay mode active: loading canned pack from {replay_pack_path}...")
+        with open(replay_pack_path, "r") as f:
+            pack = BriefingPack.model_validate_json(f.read())
+        llm_client = MockLLMClient()
+        judge_client = MockJudgeLLMClient()
+    else:
+        logger.info("[Stage 1/6] Ingesting market metrics, economic calendar, and news...")
+        pack = build_pack(target_date)
+        llm_client = None
+        judge_client = None
     pack_text = pack.to_briefing_text()
     logger.info(f"Briefing Pack compiled ({len(pack.get_valid_evidence_ids())} valid evidence tokens).")
 
     # STAGE 2: Run Dual Adversarial Analysts Concurrently
     logger.info("[Stage 2/6] Launching concurrent Bull and Bear analyst agents...")
-    bull_case, bear_case = run_dual_analysts(pack)
+    bull_case, bear_case = run_dual_analysts(pack, client=llm_client)
 
     # STAGE 3: Citation Verification Firewall
     logger.info("[Stage 3/6] Verifying evidence citations against Briefing Pack...")
-    b_case, r_case, is_valid = verify_cases_with_retry(pack, bull_case, bear_case)
+    b_case, r_case, is_valid = verify_cases_with_retry(pack, bull_case, bear_case, llm_client=llm_client)
 
     if not is_valid or b_case is None or r_case is None:
         logger.error("Citation validation failed after retry. Falling back to SAFE NO-VERDICT.")
@@ -87,7 +99,7 @@ def run_workflow(
 
     # STAGE 5: Neutral Blind Judge Arbitration
     logger.info("[Stage 5/6] Submitting cases to Neutral Blind Judge...")
-    judge_output = evaluate_cases_blind(pack, case_x, case_y)
+    judge_output = evaluate_cases_blind(pack, case_x, case_y, client=judge_client)
 
     # STAGE 6: Unblind, Persist & Notify
     logger.info("[Stage 6/6] Unblinding verdict, persisting to SQLite, and dispatching notification...")
@@ -141,6 +153,7 @@ def evaluate_eod(date_str: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="NAS100 Compound AI Workflow Runner")
     parser.add_argument("--date", type=str, help="Run for specific date (YYYY-MM-DD)")
+    parser.add_argument("--replay", type=str, help="Replay pipeline using canned briefing_pack.json offline")
     parser.add_argument("--no-telegram", action="store_true", help="Suppress Telegram alert dispatch")
     parser.add_argument("--stats", action="store_true", help="Display forward-testing performance statistics")
     parser.add_argument("--eod", type=str, help="Evaluate post-market outcome for date (YYYY-MM-DD)")
@@ -152,12 +165,25 @@ def main() -> None:
         print("\n=== FORWARD-TEST PERFORMANCE DASHBOARD ===")
         print(f"Total Pre-Market Runs: {stats['total_runs']}")
         overall = stats.get("overall", {})
-        print(f"Evaluated Runs: {overall.get('evaluated', 0)}")
-        print(f"Correct Predictions: {overall.get('correct', 0)}")
-        print(f"Overall Directional Win Rate: {overall.get('overall_win_rate', 0.0)}%")
+        n = overall.get("evaluated", 0)
+        correct = overall.get("correct", 0)
+        win_rate = overall.get("overall_win_rate", 0.0)
+        print(f"Evaluated Runs (N):              {n}")
+        print(f"Correct Predictions:             {correct}")
+        print(f"Overall Directional Win Rate:    {win_rate}% (N={n})")
+        
+        baselines = stats.get("baselines", {})
+        always_bull = baselines.get("always_bullish_win_rate")
+        print(f"Baseline (Always Bullish):       {always_bull if always_bull is not None else 'N/A'}% (N={n})")
+
         print("\nBreakdown by Confidence Level:")
         for row in stats.get("by_confidence", []):
-            print(f"  • Confidence: {row['confidence'].upper():<7} | Count: {row['count']} | Win Rate: {row['win_rate']*100:.1f}%")
+            count = row["count"]
+            c_win = row["win_rate"] * 100.0 if row["win_rate"] is not None else 0.0
+            print(f"  • Confidence: {row['confidence'].upper():<7} | N = {count:<3} | Win Rate: {c_win:.1f}%")
+        
+        if n < 100:
+            print("\n[!] NOTE: Sample size N < 100 is too small to draw statistically significant conclusions.")
         print("==========================================\n")
         sys.exit(0)
 
@@ -166,7 +192,7 @@ def main() -> None:
         sys.exit(0)
 
     # Standard run
-    res = run_workflow(target_date_str=args.date, send_telegram=not args.no_telegram)
+    res = run_workflow(target_date_str=args.date, send_telegram=not args.no_telegram, replay_pack_path=args.replay)
     print("\n--- FINAL WORKFLOW OUTPUT ---")
     print(json.dumps(res, indent=2))
 

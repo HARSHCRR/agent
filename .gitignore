@@ -11,7 +11,7 @@ __pycache__/
 *.so
 
 # Data and SQLite databases
-data/
+/data/
 *.db
 *.sqlite3
 
@@ -23,9 +23,3 @@ data/
 .Trashes
 ehthumbs.db
 Thumbs.db
-
-# C++ build artifacts
-cpp/build/
-*.o
-*.a
-*.dylib

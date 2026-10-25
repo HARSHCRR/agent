@@ -1,7 +1,22 @@
 import json
 import logging
 import random
-from typing import Any, Dict, List, Optional, Set, Tuple
+import secrets
+from typing import Any, Dict, List, Optional, Protocol, Set, Tuple
+
+class JudgeLLMClient(Protocol):
+    def evaluate(self, pack: BriefingPack, case_x: Dict[str, Any], case_y: Dict[str, Any]) -> JudgeOutput:
+        ...
+
+class MockJudgeLLMClient:
+    def __init__(self, canned_output: Optional[JudgeOutput] = None):
+        self.canned_output = canned_output
+
+    def evaluate(self, pack: BriefingPack, case_x: Dict[str, Any], case_y: Dict[str, Any]) -> JudgeOutput:
+        if self.canned_output:
+            return self.canned_output
+        return _generate_mock_judge(pack, case_x, case_y)
+
 
 from config import GEMINI_API_KEY, GEMINI_MODEL, THINKING_LEVEL_JUDGE
 from models import BriefingPack, CaseOutput, JudgeOutput
@@ -32,6 +47,7 @@ def verify_cases_with_retry(
     bull_case: CaseOutput,
     bear_case: CaseOutput,
     api_key: Optional[str] = None,
+    llm_client: Optional[Any] = None,
 ) -> Tuple[Optional[CaseOutput], Optional[CaseOutput], bool]:
     """
     Validates both analyst cases against the briefing pack.
@@ -48,7 +64,7 @@ def verify_cases_with_retry(
         logger.warning(
             f"Bull case failed citation check on IDs: {bull_invalids}. Initiating 1-retry loop..."
         )
-        bull_case = generate_case("BULL", pack, api_key=api_key)
+        bull_case = generate_case("BULL", pack, api_key=api_key, client=llm_client)
         bull_valid, bull_invalids = validate_citations(bull_case, valid_ids)
         if not bull_valid:
             logger.error(
@@ -62,7 +78,7 @@ def verify_cases_with_retry(
         logger.warning(
             f"Bear case failed citation check on IDs: {bear_invalids}. Initiating 1-retry loop..."
         )
-        bear_case = generate_case("BEAR", pack, api_key=api_key)
+        bear_case = generate_case("BEAR", pack, api_key=api_key, client=llm_client)
         bear_valid, bear_invalids = validate_citations(bear_case, valid_ids)
         if not bear_valid:
             logger.error(
@@ -91,7 +107,7 @@ def anonymize_and_randomize(
     bull_dict.pop("side", None)
     bear_dict.pop("side", None)
 
-    if random.choice([True, False]):
+    if secrets.choice([True, False]):
         case_x = bull_dict
         case_y = bear_dict
         mapping = {"X": "BULL", "Y": "BEAR"}
@@ -138,7 +154,10 @@ def evaluate_cases_blind(
     case_y: Dict[str, Any],
     api_key: Optional[str] = None,
     model_name: Optional[str] = None,
+    client: Optional[JudgeLLMClient] = None,
 ) -> JudgeOutput:
+    if client is not None:
+        return client.evaluate(pack, case_x, case_y)
     """
     Calls Gemini 3.8 Flash with thinking_level='medium' and temperature=0.1
     to evaluate Case X vs Case Y blindly.

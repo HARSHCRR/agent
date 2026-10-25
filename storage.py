@@ -1,7 +1,7 @@
 import json
 import logging
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 def init_db(db_path: Path = DB_PATH) -> None:
-    """Initializes the SQLite database schema if not already present."""
+    """Initializes the SQLite database schema and append-only immutability triggers."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
@@ -39,6 +39,45 @@ def init_db(db_path: Path = DB_PATH) -> None:
             )
             """
         )
+
+        # Trigger 1: Disallow all deletions
+        cursor.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS prevent_verdicts_delete
+            BEFORE DELETE ON verdicts
+            BEGIN
+                SELECT RAISE(ABORT, 'Deletes are strictly prohibited on append-only audit ledger');
+            END;
+            """
+        )
+
+        # Trigger 2: Disallow modification of pre-market decision columns
+        cursor.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS prevent_verdicts_core_update
+            BEFORE UPDATE ON verdicts
+            BEGIN
+                SELECT CASE
+                    WHEN (OLD.run_date != NEW.run_date)
+                      OR (OLD.created_at != NEW.created_at)
+                      OR (OLD.pack_text != NEW.pack_text)
+                      OR (OLD.bull_case != NEW.bull_case)
+                      OR (OLD.bear_case != NEW.bear_case)
+                      OR (OLD.blind_mapping != NEW.blind_mapping)
+                      OR (OLD.blind_winner != NEW.blind_winner)
+                      OR (OLD.unblinded_winner != NEW.unblinded_winner)
+                      OR (OLD.verdict != NEW.verdict)
+                      OR (OLD.confidence != NEW.confidence)
+                      OR (OLD.deciding_factors != NEW.deciding_factors)
+                      OR (OLD.reasoning != NEW.reasoning)
+                      OR (OLD.events_to_watch != NEW.events_to_watch)
+                      OR (OLD.caveats != NEW.caveats)
+                      OR (OLD.actual_return_pct IS NOT NULL AND NEW.actual_return_pct != OLD.actual_return_pct)
+                    THEN RAISE(ABORT, 'Pre-market verdict fields are immutable once recorded')
+                END;
+            END;
+            """
+        )
         conn.commit()
 
 
@@ -55,7 +94,7 @@ def save_run(
     Returns the newly inserted row ID.
     """
     init_db(db_path)
-    now_str = datetime.utcnow().isoformat()
+    now_str = datetime.now(timezone.utc).isoformat()
 
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
@@ -97,11 +136,12 @@ def record_eod_outcome(
 ) -> None:
     """
     Updates the post-session market outcome (at 16:00 ET) and computes accuracy.
+    Only updates rows where actual_return_pct has not yet been reconciled.
     """
     init_db(db_path)
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT id, verdict FROM verdicts WHERE run_date = ?", (run_date,))
+        cursor.execute("SELECT id, verdict FROM verdicts WHERE run_date = ? AND actual_return_pct IS NULL", (run_date,))
         rows = cursor.fetchall()
 
         for row_id, verdict in rows:
@@ -161,31 +201,23 @@ def get_performance_stats(db_path: Path = DB_PATH) -> Dict[str, Any]:
         )
         overall = dict(cursor.fetchone())
 
+        # Baseline metrics over evaluated runs
+        cursor.execute(
+            """
+            SELECT
+                ROUND(AVG(CASE WHEN actual_direction = 'up' THEN 1.0 ELSE 0.0 END) * 100, 1) as always_bullish_win_rate
+            FROM verdicts
+            WHERE is_correct IS NOT NULL
+            """
+        )
+        baseline_row = cursor.fetchone()
+        always_bullish = baseline_row["always_bullish_win_rate"] if baseline_row else None
+
     return {
         "total_runs": total_runs,
         "overall": overall,
         "by_confidence": confidence_breakdown,
+        "baselines": {
+            "always_bullish_win_rate": always_bullish
+        }
     }
-
-
-if __name__ == "__main__":
-    print("Testing Step 5: Storage Ledger & SQLite...")
-    init_db()
-    sample_res = {
-        "verdict": "bullish",
-        "confidence": "high",
-        "blind_winner": "X",
-        "unblinded_winner": "BULL",
-        "mapping": {"X": "BULL", "Y": "BEAR"},
-        "deciding_factors": ["VIX compression", "Consolidation above 20d MA"],
-        "reasoning": "Strong evidence support",
-        "events_to_watch": ["None"],
-        "caveats": "None",
-    }
-    row_id = save_run("2026-10-12", "sample pack", {"mock": 1}, {"mock": 2}, sample_res)
-    print(f"Sample run logged with row ID: {row_id}")
-
-    # Test EOD update
-    record_eod_outcome("2026-10-12", 0.85, "up")
-    stats = get_performance_stats()
-    print("Stats:", stats)

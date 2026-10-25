@@ -1,7 +1,7 @@
 import concurrent.futures
 import json
 import logging
-from typing import Dict, Literal, Optional, Tuple
+from typing import Dict, Literal, Optional, Protocol, Tuple
 
 from config import GEMINI_API_KEY, GEMINI_MODEL, THINKING_LEVEL_ANALYST
 from models import BriefingPack, CaseDriver, CaseOutput
@@ -9,10 +9,65 @@ from models import BriefingPack, CaseDriver, CaseOutput
 logger = logging.getLogger(__name__)
 
 # =====================================================================
+# LLM CLIENT ABSTRACTION (FOR TESTING, REPLAY & INJECTION)
+# =====================================================================
+
+class LLMClient(Protocol):
+    def generate_case(self, side: Literal["BULL", "BEAR"], pack: BriefingPack) -> CaseOutput:
+        ...
+
+class GeminiLLMClient:
+    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
+        self.api_key = api_key or GEMINI_API_KEY
+        self.model = model or GEMINI_MODEL
+
+    def generate_case(self, side: Literal["BULL", "BEAR"], pack: BriefingPack) -> CaseOutput:
+        from google import genai
+        from google.genai import types
+
+        system_instruction = ANALYST_SYSTEM_PROMPT.format(SIDE=side)
+        user_prompt = ANALYST_USER_PROMPT.format(SIDE=side, pack_text=pack.to_briefing_text())
+
+        client = genai.Client(api_key=self.api_key)
+        config = types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            response_mime_type="application/json",
+            response_schema=CaseOutput,
+            temperature=0.2,
+            thinking_config=types.ThinkingConfig(
+                thinking_budget=1024
+            ) if "flash" in self.model.lower() else None,
+        )
+
+        response = client.models.generate_content(
+            model=self.model,
+            contents=user_prompt,
+            config=config,
+        )
+        return CaseOutput.model_validate_json(response.text)
+
+class MockLLMClient:
+    def __init__(
+        self,
+        canned_bull: Optional[CaseOutput] = None,
+        canned_bear: Optional[CaseOutput] = None,
+    ):
+        self.canned_bull = canned_bull
+        self.canned_bear = canned_bear
+
+    def generate_case(self, side: Literal["BULL", "BEAR"], pack: BriefingPack) -> CaseOutput:
+        if side == "BULL" and self.canned_bull:
+            return self.canned_bull
+        if side == "BEAR" and self.canned_bear:
+            return self.canned_bear
+        return _generate_mock_case(side, pack)
+
+
+# =====================================================================
 # PARAMETERIZED ANALYST PROMPT TEMPLATE
 # =====================================================================
 
-ANALYST_SYSTEM_PROMPT = """You are an institutional quantitative equity analyst assigned to argue the {SIDE} case for NAS100 (Nasdaq 100) for today's US cash session. You will be given a briefing pack.
+ANALYST_SYSTEM_PROMPT = """You are an institutional quantitative equity analyst assigned to argue the {SIDE} case for NAS100 (Nasdaq 100) for today\'s US cash session. You will be given a briefing pack.
 
 Rules:
 - Use ONLY information in the briefing pack. Do not use outside knowledge of market events, prices, or news. If something is not in the pack, do not claim it.
@@ -40,50 +95,23 @@ def generate_case(
     pack: BriefingPack,
     api_key: Optional[str] = None,
     model_name: Optional[str] = None,
+    client: Optional[LLMClient] = None,
 ) -> CaseOutput:
     """
     Executes a single analyst prompt (BULL or BEAR) against Gemini 3.8 Flash
-    with thinking_level='low' and structured Pydantic response schema.
+    or an injected LLMClient.
     """
-    key = api_key or GEMINI_API_KEY
-    model = model_name or GEMINI_MODEL
-    pack_text = pack.to_briefing_text()
-    system_instruction = ANALYST_SYSTEM_PROMPT.format(SIDE=side)
-    user_prompt = ANALYST_USER_PROMPT.format(SIDE=side, pack_text=pack_text)
+    if client is not None:
+        return client.generate_case(side, pack)
 
-    # If no Gemini API key is configured, fallback to deterministic mock for local development/testing
+    key = api_key or GEMINI_API_KEY
     if not key or key.strip() == "" or key == "your_gemini_api_key_here":
         logger.warning(f"No GEMINI_API_KEY found. Generating simulated {side} case for dry-run.")
         return _generate_mock_case(side, pack)
 
     try:
-        from google import genai
-        from google.genai import types
-
-        client = genai.Client(api_key=key)
-
-        # Configure thinking level: 'low' for analysts to minimize latency and token usage
-        config = types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            response_mime_type="application/json",
-            response_schema=CaseOutput,
-            temperature=0.2,
-            thinking_config=types.ThinkingConfig(
-                thinking_budget=1024  # low thinking budget
-            ) if "flash" in model.lower() else None,
-        )
-
-        response = client.models.generate_content(
-            model=model,
-            contents=user_prompt,
-            config=config,
-        )
-
-        # Parse and validate through Pydantic
-        raw_text = response.text
-        case_data = CaseOutput.model_validate_json(raw_text)
-        return case_data
-
+        gemini_client = GeminiLLMClient(api_key=key, model=model_name or GEMINI_MODEL)
+        return gemini_client.generate_case(side, pack)
     except Exception as e:
         logger.error(f"Error calling Gemini for {side} case: {e}. Falling back to simulated case.")
         return _generate_mock_case(side, pack)
@@ -97,14 +125,14 @@ def run_dual_analysts(
     pack: BriefingPack,
     api_key: Optional[str] = None,
     model_name: Optional[str] = None,
+    client: Optional[LLMClient] = None,
 ) -> Tuple[CaseOutput, CaseOutput]:
     """
-    Runs both Bull and Bear analysts concurrently in parallel threads to cut execution latency in half.
-    Returns (bull_case, bear_case).
+    Runs both Bull and Bear analysts concurrently in parallel threads to cut execution latency.
     """
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        future_bull = executor.submit(generate_case, "BULL", pack, api_key, model_name)
-        future_bear = executor.submit(generate_case, "BEAR", pack, api_key, model_name)
+        future_bull = executor.submit(generate_case, "BULL", pack, api_key, model_name, client)
+        future_bear = executor.submit(generate_case, "BEAR", pack, api_key, model_name, client)
 
         bull_case = future_bull.result()
         bear_case = future_bear.result()
@@ -117,10 +145,6 @@ def run_dual_analysts(
 # =====================================================================
 
 def _generate_mock_case(side: Literal["BULL", "BEAR"], pack: BriefingPack) -> CaseOutput:
-    """
-    Generates a deterministic, strictly citation-compliant mock case based on live pack data.
-    Useful for offline testing, CI/CD, and demonstrations before API key insertion.
-    """
     valid_ids = pack.get_valid_evidence_ids()
     event_ids = [eid for eid in valid_ids if eid.startswith("E")]
     first_event = event_ids[0] if event_ids else "PRICE"
@@ -150,7 +174,7 @@ def _generate_mock_case(side: Literal["BULL", "BEAR"], pack: BriefingPack) -> Ca
                 ),
             ],
             strongest_counterpoint=f"Elevated 10-year Treasury yields at {pack.price.us10y or 5.2}% remain a drag on tech multiples.",
-            invalidation="A breakdown below yesterday's low on high morning selling volume.",
+            invalidation="A breakdown below yesterday\'s low on high morning selling volume.",
             data_gaps=pack.failed_sources or ["None identified in briefing pack"],
         )
     else:
@@ -175,22 +199,6 @@ def _generate_mock_case(side: Literal["BULL", "BEAR"], pack: BriefingPack) -> Ca
                 ),
             ],
             strongest_counterpoint="VIX drop reflects calm options pricing without aggressive put buying.",
-            invalidation="Strong breakout above yesterday's high with expanding upside volume.",
+            invalidation="Strong breakout above yesterday\'s high with expanding upside volume.",
             data_gaps=pack.failed_sources or ["None identified in briefing pack"],
         )
-
-
-if __name__ == "__main__":
-    from collector import build_pack
-
-    print("Testing Step 3: Dual Adversarial Analysts...")
-    test_pack = build_pack()
-    print("Briefing Pack built. Running Bull & Bear analysts concurrently...")
-
-    bull, bear = run_dual_analysts(test_pack)
-
-    print("\n--- BULL CASE OUTPUT ---")
-    print(json.dumps(bull.model_dump(), indent=2))
-
-    print("\n--- BEAR CASE OUTPUT ---")
-    print(json.dumps(bear.model_dump(), indent=2))
