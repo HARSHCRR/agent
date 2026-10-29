@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 def init_db(db_path: Path = DB_PATH) -> None:
-    """Initializes the SQLite database schema and append-only immutability triggers."""
+    """Initializes the standard SQLite database schema for logging daily verdicts."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
@@ -39,45 +39,6 @@ def init_db(db_path: Path = DB_PATH) -> None:
             )
             """
         )
-
-        # Trigger 1: Disallow all deletions
-        cursor.execute(
-            """
-            CREATE TRIGGER IF NOT EXISTS prevent_verdicts_delete
-            BEFORE DELETE ON verdicts
-            BEGIN
-                SELECT RAISE(ABORT, 'Deletes are strictly prohibited on append-only audit ledger');
-            END;
-            """
-        )
-
-        # Trigger 2: Disallow modification of pre-market decision columns
-        cursor.execute(
-            """
-            CREATE TRIGGER IF NOT EXISTS prevent_verdicts_core_update
-            BEFORE UPDATE ON verdicts
-            BEGIN
-                SELECT CASE
-                    WHEN (OLD.run_date != NEW.run_date)
-                      OR (OLD.created_at != NEW.created_at)
-                      OR (OLD.pack_text != NEW.pack_text)
-                      OR (OLD.bull_case != NEW.bull_case)
-                      OR (OLD.bear_case != NEW.bear_case)
-                      OR (OLD.blind_mapping != NEW.blind_mapping)
-                      OR (OLD.blind_winner != NEW.blind_winner)
-                      OR (OLD.unblinded_winner != NEW.unblinded_winner)
-                      OR (OLD.verdict != NEW.verdict)
-                      OR (OLD.confidence != NEW.confidence)
-                      OR (OLD.deciding_factors != NEW.deciding_factors)
-                      OR (OLD.reasoning != NEW.reasoning)
-                      OR (OLD.events_to_watch != NEW.events_to_watch)
-                      OR (OLD.caveats != NEW.caveats)
-                      OR (OLD.actual_return_pct IS NOT NULL AND NEW.actual_return_pct != OLD.actual_return_pct)
-                    THEN RAISE(ABORT, 'Pre-market verdict fields are immutable once recorded')
-                END;
-            END;
-            """
-        )
         conn.commit()
 
 
@@ -90,7 +51,7 @@ def save_run(
     db_path: Path = DB_PATH,
 ) -> int:
     """
-    Saves an immutable snapshot of the daily pre-market execution into SQLite.
+    Saves a snapshot of the pre-market execution into SQLite.
     Returns the newly inserted row ID.
     """
     init_db(db_path)
@@ -136,7 +97,6 @@ def record_eod_outcome(
 ) -> None:
     """
     Updates the post-session market outcome (at 16:00 ET) and computes accuracy.
-    Only updates rows where actual_return_pct has not yet been reconciled.
     """
     init_db(db_path)
     with sqlite3.connect(db_path) as conn:
@@ -201,7 +161,6 @@ def get_performance_stats(db_path: Path = DB_PATH) -> Dict[str, Any]:
         )
         overall = dict(cursor.fetchone())
 
-        # Baseline metrics over evaluated runs
         cursor.execute(
             """
             SELECT

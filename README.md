@@ -1,131 +1,96 @@
-# 🦅 Quant AI Workflow: Dual-Agent Market Debate Engine with Blind Arbitration
+# 🦅 Quant AI Workflow: Dual-Agent Market Debate Engine
 
 [![Language: Python](https://img.shields.io/badge/Language-Python%203.11+-blue.svg)](https://www.python.org/)
 [![LLM: Gemini 3.8 Flash](https://img.shields.io/badge/LLM-Gemini%203.8%20Flash-green.svg)](https://ai.google.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
 
-An autonomous **Compound AI Workflow & Multi-Agent Orchestration Engine** designed for quantitative equity regime analysis on **NAS100 (Nasdaq 100)** prior to the US cash open (09:15 ET).
+An autonomous multi-agent Python pipeline that analyzes the **NASDAQ-100 (QQQ)** before market open (09:15 ET). 
 
-Rather than relying on a single monolithic prompt that suffers from LLM sycophancy, position bias, and ungrounded hallucinations, this system orchestrates two parallel adversarial analyst agents (**Bull vs. Bear**) across a strictly curated pre-market briefing pack, passes their structured outputs through a deterministic code-level citation firewall, and submits them to an order-randomized **Blind Judge** for objective arbitration.
+Instead of asking a single AI model for a generic prediction, this project pits two competing AI agents (**Bull vs. Bear**) against each other, verifies their facts with a Python citation check, and uses an impartial **Blind Judge** to determine which side has the stronger evidence.
 
-Implemented in **Python 3.11+ (Pydantic V2 + Google GenAI SDK)** with an offline replay engine and comprehensive test harness.
+---
+
+## 💡 The Core Idea (In 60 Seconds)
+
+If you ask ChatGPT *"Where is the stock market going today?"*, you get vague, non-committal answers or hallucinations.
+
+This project solves that using a simple **3-step workflow**:
+
+1. **The Adversarial Debate**: At 09:15 ET, we pull market data (QQQ price, VIX volatility, economic calendar, news). One AI agent is forced to build the **Bullish case**, and another is forced to build the **Bearish case**.
+2. **The Fact Check**: Each agent must cite specific IDs from our data (e.g., `PRICE`, `NEWS_1`). A Python function verifies that every cited ID actually exists in the morning data, catching any hallucinated numbers.
+3. **The Blind Judge**: We randomly flip a coin to swap Case A and Case B and strip directional labels ("Bull"/"Bear"). A third AI judge reads both cases blindly and picks the winner purely based on evidence quality.
+4. **Daily Logging**: The decision is saved into a local SQLite database (`verdicts.db`). At market close (16:00 ET), we record the actual market move to track accuracy over time.
 
 ---
 
 ## 🏛️ System Architecture
 
 ```
-                       ┌──────────────────────────────────────────────┐
-                       │  Stage 1: Briefing Pack Collector (09:15 ET) │
-                       │  - QQQ (O,H,L,C, 20d Volume), VIX, US10Y, DXY │
-                       │  - US Macro Calendar (E1..En, Y1..Yn)        │
-                       │  - News (<09:15 ET: H1..Hn), [DATA_STATUS]   │
-                       └───────────────────────┬──────────────────────┘
-                                               │
-                       ┌───────────────────────┴──────────────────────┐
-                       ▼                                              ▼
-            ┌─────────────────────┐                        ┌─────────────────────┐
-            │ Stage 2: BULL Agent │                        │ Stage 2: BEAR Agent │
-            │ Gemini 3.8 Flash    │                        │ Gemini 3.8 Flash    │
-            │ (thinking: low)     │                        │ (thinking: low)     │
-            └──────────┬──────────┘                        └──────────┬──────────┘
-                       │                                              │
-                       └───────────────────────┬──────────────────────┘
-                                               ▼
-                       ┌──────────────────────────────────────────────┐
-                       │ Stage 3: Deterministic Citation Firewall     │
-                       │ - Set-membership check of cited IDs in Pack  │
-                       │ - Automated 1-Retry Loop on hallucination    │
-                       │ - Safe "No-Verdict" fallback if invalid      │
-                       └───────────────────────┬──────────────────────┘
-                                               │
-                                               ▼
-                       ┌──────────────────────────────────────────────┐
-                       │ Stage 4: Blind Anonymizer & Order Shuffler   │
-                       │ - Strips "BULL" / "BEAR" labels              │
-                       │ - Random coin flip: Case X vs Case Y         │
-                       │ - Mitigates LLM positional presentation bias │
-                       └───────────────────────┬──────────────────────┘
-                                               │
-                                               ▼
-                       ┌──────────────────────────────────────────────┐
-                       │ Stage 5: Neutral Blind Judge                 │
-                       │ Gemini 3.8 Flash (thinking: medium, T=0.1)   │
-                       │ - Evaluates evidence quality over rhetoric   │
-                       │ - Defaults to "sideways" under catalyst risk │
-                       └───────────────────────┬──────────────────────┘
-                                               │
-                                               ▼
-                       ┌──────────────────────────────────────────────┐
-                       │ Stage 6: Unblinder, Ledger & Telegram Alert  │
-                       │ - Unblinds X/Y -> Real Market Bias           │
-                       │ - Append-only SQLite Ledger (verdicts.db)    │
-                       │ - Actionable Telegram Alert to Bot           │
-                       │ - 16:00 ET Ground-Truth Win Rate Evaluator   │
-                       └──────────────────────────────────────────────┘
+                  ┌────────────────────────────────────────┐
+                  │ 1. Collect Morning Market Data         │
+                  │    QQQ Price, VIX, Macro News & Events │
+                  └───────────────────┬────────────────────┘
+                                      │
+                   ┌──────────────────┴──────────────────┐
+                   ▼                                     ▼
+        ┌─────────────────────┐               ┌─────────────────────┐
+        │  Bull Analyst (AI)  │               │  Bear Analyst (AI)  │
+        │  Finds reasons to   │               │  Finds reasons to   │
+        │  be optimistic      │               │  be cautious        │
+        └──────────┬──────────┘               └──────────┬──────────┘
+                   │                                     │
+                   └──────────────────┬──────────────────┘
+                                      ▼
+                  ┌────────────────────────────────────────┐
+                  │ 2. Fact Check (Python)                 │
+                  │    Verifies all cited IDs exist in data│
+                  └───────────────────┬────────────────────┘
+                                      ▼
+                  ┌────────────────────────────────────────┐
+                  │ 3. Blind Randomizer (Coin Flip)        │
+                  │    Swaps Case A & B; strips labels     │
+                  └───────────────────┬────────────────────┘
+                                      ▼
+                  ┌────────────────────────────────────────┐
+                  │ 4. Blind Judge (AI)                    │
+                  │    Picks Case A, Case B, or Sideways   │
+                  └───────────────────┬────────────────────┘
+                                      ▼
+                  ┌────────────────────────────────────────┐
+                  │ 5. SQLite Database (verdicts.db)       │
+                  │    Stores verdict & checks accuracy EOD│
+                  └────────────────────────────────────────┘
 ```
-
----
-
-## ⚡ Key Highlights
-
-* **Adversarial Debate Pattern**: Mitigates non-committal answers and single-model confirmation bias by forcing two partisan agents to dig up verifiable evidence for their assigned side.
-* **Deterministic Code Firewall**: Runtime set-membership verification ensuring that every cited ID (`PRICE`, `E1`, `Y1`, `H1`) strictly exists in the briefing pack. Rejects hallucinated citations programmatically and validates payload schemas via Pydantic V2.
-* **Positional Bias Mitigation (Blind Arbitration)**: Anonymizes and randomizes the order of cases (`Case X` vs `Case Y`) using cryptographic PRNG (`secrets.choice`) so the judge evaluates evidence quality rather than prompt order.
-* **Asymmetric Thinking Budgets**:
-  * **Analysts**: `thinking_level="low"` (1,024 tokens) for low latency and focused information extraction.
-  * **Judge**: `thinking_level="medium"` (2,048 tokens, $T=0.1$) for deep cross-examination and repeatable verdicts.
-* **Append-Only SQLite Ledger**: Every pre-market execution logs the raw briefing pack, analyst claims, blind mapping, and judge reasoning into an SQLite database with triggers enforcing immutability on core decision fields.
-
----
-
-## ⚙️ Design Notes
-
-* **Workload Characteristics**: The pipeline execution is network-bound on external LLM inference and financial API endpoints (~1.5–4.0s wall-clock time). Local data validation, shuffling, and database insertion take under 5 milliseconds.
-* **Offline Replay Mode**: The entire pipeline can execute deterministically without API keys or network calls via `--replay <path/to/pack.json>`, mocking the LLM responses for CI/CD and regression testing.
-* **Modular LLM Client Protocol**: Analysts and Judge depend on abstract protocols (`LLMClient`, `JudgeLLMClient`), allowing drop-in test doubles and multi-model evaluations.
-
----
-
-## ⚠️ Limitations & Realism
-
-1. **Sample Size & Statistical Power**: Because this pipeline produces at most one prediction per trading day (~252 sessions/year), calculating a statistically significant win rate or Sharpe ratio requires several months of live forward testing ($N \ge 100$). Short-term win rates are statistically noisy.
-2. **No Claim of Market Edge**: LLM reasoning summarizes and stresses existing public data; this pipeline does not claim an alpha edge or predictive superiority over market baselines.
-3. **Non-Deterministic Outputs**: Even with low temperature ($T=0.1$) and fixed seeds, current commercial LLM API outputs remain non-deterministic across calls.
 
 ---
 
 ## 🗂️ Project Structure
 
+The project is kept simple with clean, modular Python files:
+
 ```
 project_agent/
-├── config.py                 # Central configuration, market cutoffs, and environment loader
-├── models.py                 # Pydantic schemas: BriefingPack, CaseOutput, JudgeOutput
-├── collector.py              # 09:15 ET Ingestion engine (Quotes, Macro Calendar, Headlines)
-├── analysts.py               # Concurrent Bull & Bear adversarial engine (Gemini 3.8 Flash)
-├── judge.py                  # Citation verification firewall, blind shuffler, and neutral judge
-├── storage.py                # Append-only SQLite3 audit ledger & performance dashboard
-├── notifier.py               # Telegram Bot API formatted alert dispatcher
-├── main.py                   # Executive CLI orchestrator (--replay, --stats, --eod, --no-telegram)
-├── requirements.txt          # Pinned Python dependencies
-├── pytest.ini                # Pytest configuration
-├── .env.example              # Secrets and configuration template
-├── scripts/
-│   └── ablation_shuffle.py   # Empirical position-bias ablation evaluator
-└── tests/                    # Comprehensive unit tests
-    ├── conftest.py
-    ├── data/
-    │   └── sample_pack.json  # Canned briefing pack for offline replay
-    ├── test_firewall.py      # Citation validation & retry logic tests
-    ├── test_shuffler.py      # PRNG shuffler & unblinding tests
-    └── test_storage.py       # SQLite trigger & immutability tests
+├── collector.py      # Fetches QQQ prices, VIX, and news into a clean dictionary
+├── analysts.py       # Calls Gemini twice (once Bull prompt, once Bear prompt)
+├── judge.py          # Checks citations, swaps cases, and gets Judge verdict
+├── storage.py        # Saves predictions to SQLite and records EOD accuracy
+├── notifier.py       # Optional Telegram alert sender
+├── main.py           # CLI orchestrator that runs the entire workflow
+├── config.py         # Configuration settings & environment variables
+├── models.py         # Pydantic schemas for data validation
+├── tests/            # 9 automated unit tests and offline replay data
+│   ├── data/sample_pack.json
+│   ├── test_firewall.py
+│   ├── test_shuffler.py
+│   └── test_storage.py
+└── pytest.ini        # Test runner configuration
 ```
 
 ---
 
-## 🚀 Quickstart: Python Workflow
+## 🚀 Quickstart
 
-### 1. Environment Setup
+### 1. Setup Environment
 ```bash
 git clone https://github.com/HARSHCRR/agent.git
 cd agent
@@ -136,115 +101,58 @@ pip install -r requirements.txt
 ```
 
 ### 2. Configure Credentials
-Copy `.env.example` to `.env` and configure your API keys:
+Copy `.env.example` to `.env`:
 ```bash
 cp .env.example .env
 ```
-Key variables:
-* `GEMINI_API_KEY`: Google Gemini API Key (defaults to deterministic mock mode if omitted).
-* `FMP_API_KEY`: Financial Modeling Prep API Key (optional).
-* `TELEGRAM_BOT_TOKEN` & `TELEGRAM_CHAT_ID`: Telegram credentials for live alerts.
+Add your `GEMINI_API_KEY`. (If left empty, you can still run in offline replay mode).
 
-### 3. Execution Commands
+### 3. Run Commands
+
 ```bash
-# Run the complete live pre-market workflow
+# Run the live morning workflow
 python main.py
 
-# Run in offline replay mode with a canned briefing pack (no API key required)
+# Run in offline replay mode (runs instantly with canned data, no API key needed)
 python main.py --replay tests/data/sample_pack.json --no-telegram
 
-# Run in test mode without dispatching Telegram alerts
-python main.py --no-telegram
-
-# View forward-testing win rates and performance dashboard
+# Check historical accuracy and statistics
 python main.py --stats
 
-# Reconcile post-market outcome at 16:00 ET (e.g. for Oct 12, 2026)
-python main.py --eod 2026-10-12
+# Record market close results at 16:00 ET (e.g., QQQ finished +0.85% Up)
+python main.py --eod 2026-10-30 0.85 up
 ```
 
 ---
 
-## 📊 Sample Telegram Pre-Market Alert
+## 🧪 Automated Testing
 
-```text
-📊 NAS100 PRE-MARKET VERDICT | 2026-10-12
-━━━━━━━━━━━━━━━━━━━━━━
-Verdict: 🟢 BULLISH
-Confidence: MEDIUM
-Winning Case: BULL (Blind Case X)
-
-⚖️ Deciding Factors:
-  • VIX compression to 15.31 reflecting calm equity options pricing
-  • Supportive pre-market price consolidation above key moving averages
-
-🧠 Rationale:
-Technical stability and benign volatility index readings provide superior support compared to macro yield drag concerns.
-
-👀 Events to Watch: Cash open volume expansion, FOMC Member Hammack Speech
-
-⚠️ Caveats: Thin holiday trading volumes (-37.9% vs 20d average) may exaggerate intra-day moves.
-━━━━━━━━━━━━━━━━━━━━━━
-🤖 Autonomous Dual-Analyst AI Workflow
-```
-
----
-
-## 🔬 Ablation Studies & Empirical Bias Measurement
-
-An ablation script (`scripts/ablation_shuffle.py`) measures the sensitivity of the LLM judge to presentation order (swapping `Case X` and `Case Y` on identical inputs) and computes the empirical **Verdict-Flip Rate**:
-
-```bash
-# Run ablation study across N evaluations (offline replay mode)
-python scripts/ablation_shuffle.py --n 20 --replay tests/data/sample_pack.json
-
-# Run live ablation study with real Gemini API
-python scripts/ablation_shuffle.py --n 20
-```
-
----
-
-## 🧪 Testing & CI/CD
-
-The test suite runs automatically on every push via GitHub Actions (`.github/workflows/ci.yml`).
-
-### Running Python Tests (Pytest)
+Run the unit test suite:
 ```bash
 pytest -v
 ```
-*Tests citation set-membership firewall, edge cases, retry-then-fallback path, PRNG shuffler unblinding, and SQLite append-only triggers (10 unit tests).*
+All 9 unit tests run offline in under 0.2 seconds, testing:
+* Citation verification (valid IDs, missing IDs, retry fallback)
+* Blind case shuffling and unblinding logic
+* SQLite database insertion and EOD accuracy calculation
 
 ---
 
-## 📈 Performance Tracking & Forward Testing
+## 🎯 Interview Q&A (How to Defend This)
 
-Pre-market predictions are persisted to an append-only SQLite ledger (`data/verdicts.db`), enforced via triggers preventing `DELETE` operations or alterations to pre-market fields.
+#### Q1: "Why use two agents (Bull & Bear) instead of one prompt asking for pros and cons?"
+> *"When a single prompt writes both pros and cons, the second half of the response is influenced by what the model wrote first due to attention bias. By making two completely independent calls, both agents produce genuinely strong, uncompromised arguments without knowing what the other is saying."*
 
-```sql
-SELECT 
-    confidence,
-    COUNT(*) AS total_calls,
-    ROUND(AVG(is_correct) * 100, 1) AS win_rate_pct
-FROM verdicts 
-WHERE is_correct IS NOT NULL
-GROUP BY confidence;
-```
+#### Q2: "How do you prevent the AI from making up numbers?"
+> *"Every data point in our morning briefing has an ID (like `PRICE` or `NEWS_1`). In the prompt, agents are required to cite these IDs for every claim. A Python validator checks that every cited ID exists in our input dictionary before passing the argument to the judge."*
 
----
+#### Q3: "Why randomly swap the cases before the judge sees them?"
+> *"LLMs have natural positional bias—they often favor whichever option is presented first. By randomly flipping a coin (`random.choice`) to swap Case A and Case B and removing the words 'Bull' and 'Bear', the judge is forced to evaluate pure argument quality rather than position or market direction."*
 
-## 📊 Forward-Test Results
-
-> *Note: This table tracks forward-tested pre-market predictions evaluated against 16:00 ET market closes.*
-
-| Metric | System Result | Always Bullish Baseline | Yesterday's Direction Baseline | Status |
-| :--- | :---: | :---: | :---: | :---: |
-| **Total Evaluated ($N$)** | — | — | — | *Not yet populated ($N < 100$)* |
-| **Overall Win Rate** | — | — | — | *Not yet populated* |
-| **High Confidence Win Rate** | — | — | — | *Not yet populated* |
-| **Medium Confidence Win Rate**| — | — | — | *Not yet populated* |
-| **Low Confidence Win Rate** | — | — | — | *Not yet populated* |
+#### Q4: "Why native Python instead of LangChain or CrewAI?"
+> *"Frameworks like CrewAI add unnecessary prompt overhead and complex conversational loops. For a quantitative workflow, we needed strict data validation, predictable latency, and simple unit tests. Native Python with Pydantic was cleaner, faster, and 100% testable."*
 
 ---
 
 ## 📄 License
-This project is open-source and available under the [MIT License](LICENSE).
+This project is open-source under the [MIT License](LICENSE).

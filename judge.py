@@ -1,7 +1,6 @@
 import json
 import logging
 import random
-import secrets
 from typing import Any, Dict, List, Optional, Protocol, Set, Tuple
 
 class JudgeLLMClient(Protocol):
@@ -107,7 +106,7 @@ def anonymize_and_randomize(
     bull_dict.pop("side", None)
     bear_dict.pop("side", None)
 
-    if secrets.choice([True, False]):
+    if random.choice([True, False]):
         case_x = bull_dict
         case_y = bear_dict
         mapping = {"X": "BULL", "Y": "BEAR"}

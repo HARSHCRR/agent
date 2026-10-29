@@ -26,6 +26,3 @@ jobs:
       - name: Run Replay Engine
         run: |
           python main.py --replay tests/data/sample_pack.json --no-telegram
-      - name: Run Ablation Study (Replay Mode)
-        run: |
-          python scripts/ablation_shuffle.py --n 5 --replay tests/data/sample_pack.json

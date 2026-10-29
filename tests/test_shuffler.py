@@ -81,10 +81,10 @@ def test_unblinding_maps_correct_side(mock_cases):
 def test_both_orders_reachable(mock_cases):
     bull, bear = mock_cases
     
-    with patch("secrets.choice", return_value=True):
+    with patch("random.choice", return_value=True):
         _, _, map_true = anonymize_and_randomize(bull, bear)
         assert map_true == {"X": "BULL", "Y": "BEAR"}
         
-    with patch("secrets.choice", return_value=False):
+    with patch("random.choice", return_value=False):
         _, _, map_false = anonymize_and_randomize(bull, bear)
         assert map_false == {"X": "BEAR", "Y": "BULL"}
