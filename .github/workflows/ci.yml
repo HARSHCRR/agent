@@ -22,7 +22,7 @@ jobs:
           pip install -r requirements.txt
       - name: Run Pytest
         run: |
-          pytest -v
+          python -m pytest -v
       - name: Run Replay Engine
         run: |
           python main.py --replay tests/data/sample_pack.json --no-telegram
