@@ -1,182 +1,124 @@
-import json
+import csv
 import logging
-import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from config import DB_PATH
+from config import DATA_DIR
 
 logger = logging.getLogger(__name__)
+CSV_PATH = DATA_DIR / "daily_verdicts.csv"
+
+FIELDNAMES = [
+    "run_date",
+    "created_at",
+    "verdict",
+    "confidence",
+    "winning_case",
+    "deciding_factors",
+    "reasoning",
+    "actual_return_pct",
+    "actual_direction",
+    "is_correct",
+]
 
 
-def init_db(db_path: Path = DB_PATH) -> None:
-    """Initializes the standard SQLite database schema for logging daily verdicts."""
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS verdicts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                run_date TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                pack_text TEXT NOT NULL,
-                bull_case TEXT NOT NULL,
-                bear_case TEXT NOT NULL,
-                blind_mapping TEXT NOT NULL,
-                blind_winner TEXT NOT NULL,
-                unblinded_winner TEXT NOT NULL,
-                verdict TEXT NOT NULL,
-                confidence TEXT NOT NULL,
-                deciding_factors TEXT NOT NULL,
-                reasoning TEXT NOT NULL,
-                events_to_watch TEXT NOT NULL,
-                caveats TEXT NOT NULL,
-                actual_return_pct REAL DEFAULT NULL,
-                actual_direction TEXT DEFAULT NULL,
-                is_correct INTEGER DEFAULT NULL
-            )
-            """
-        )
-        conn.commit()
+def init_storage(csv_path: Path = CSV_PATH) -> None:
+    """Initializes the CSV ledger with headers if it does not exist."""
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    if not csv_path.exists():
+        with open(csv_path, mode="w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
+            writer.writeheader()
 
 
 def save_run(
     run_date: str,
-    pack_text: str,
-    bull_case: Dict[str, Any],
-    bear_case: Dict[str, Any],
     unblinded_result: Dict[str, Any],
-    db_path: Path = DB_PATH,
-) -> int:
-    """
-    Saves a snapshot of the pre-market execution into SQLite.
-    Returns the newly inserted row ID.
-    """
-    init_db(db_path)
+    csv_path: Path = CSV_PATH,
+) -> None:
+    """Appends morning pre-market verdict to CSV."""
+    init_storage(csv_path)
     now_str = datetime.now(timezone.utc).isoformat()
 
-    with sqlite3.connect(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO verdicts (
-                run_date, created_at, pack_text, bull_case, bear_case,
-                blind_mapping, blind_winner, unblinded_winner,
-                verdict, confidence, deciding_factors, reasoning,
-                events_to_watch, caveats
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                run_date,
-                now_str,
-                pack_text,
-                json.dumps(bull_case),
-                json.dumps(bear_case),
-                json.dumps(unblinded_result.get("mapping", {})),
-                unblinded_result.get("blind_winner", ""),
-                unblinded_result.get("unblinded_winner", ""),
-                unblinded_result.get("verdict", ""),
-                unblinded_result.get("confidence", ""),
-                json.dumps(unblinded_result.get("deciding_factors", [])),
-                unblinded_result.get("reasoning", ""),
-                json.dumps(unblinded_result.get("events_to_watch", [])),
-                unblinded_result.get("caveats", ""),
-            ),
-        )
-        conn.commit()
-        return cursor.lastrowid
+    row = {
+        "run_date": run_date,
+        "created_at": now_str,
+        "verdict": unblinded_result.get("verdict", ""),
+        "confidence": unblinded_result.get("confidence", ""),
+        "winning_case": unblinded_result.get("unblinded_winner", ""),
+        "deciding_factors": "; ".join(unblinded_result.get("deciding_factors", [])),
+        "reasoning": unblinded_result.get("reasoning", ""),
+        "actual_return_pct": "",
+        "actual_direction": "",
+        "is_correct": "",
+    }
+
+    with open(csv_path, mode="a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
+        writer.writerow(row)
+    logger.info("Saved morning verdict for %s to %s", run_date, csv_path)
 
 
 def record_eod_outcome(
     run_date: str,
     actual_return_pct: float,
     actual_direction: str,
-    db_path: Path = DB_PATH,
+    csv_path: Path = CSV_PATH,
 ) -> None:
     """
-    Updates the post-session market outcome (at 16:00 ET) and computes accuracy.
+    Updates the market close outcome at 16:00 ET and records accuracy (1=correct, 0=wrong).
     """
-    init_db(db_path)
-    with sqlite3.connect(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, verdict FROM verdicts WHERE run_date = ? AND actual_return_pct IS NULL", (run_date,))
-        rows = cursor.fetchall()
+    init_storage(csv_path)
+    rows: List[Dict[str, Any]] = []
 
-        for row_id, verdict in rows:
-            is_correct = 0
-            if verdict.lower() == "bullish" and actual_direction.lower() == "up":
-                is_correct = 1
-            elif verdict.lower() == "bearish" and actual_direction.lower() == "down":
-                is_correct = 1
-            elif verdict.lower() == "sideways" and actual_direction.lower() == "flat":
-                is_correct = 1
+    with open(csv_path, mode="r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row["run_date"] == run_date and row["actual_return_pct"] == "":
+                verdict = row["verdict"].strip().lower()
+                direction = actual_direction.strip().lower()
 
-            cursor.execute(
-                """
-                UPDATE verdicts
-                SET actual_return_pct = ?, actual_direction = ?, is_correct = ?
-                WHERE id = ?
-                """,
-                (actual_return_pct, actual_direction, is_correct, row_id),
-            )
-        conn.commit()
+                is_correct = 0
+                if verdict == "bullish" and direction == "up":
+                    is_correct = 1
+                elif verdict == "bearish" and direction == "down":
+                    is_correct = 1
+                elif verdict == "sideways" and direction == "flat":
+                    is_correct = 1
+
+                row["actual_return_pct"] = str(actual_return_pct)
+                row["actual_direction"] = actual_direction
+                row["is_correct"] = str(is_correct)
+            rows.append(row)
+
+    with open(csv_path, mode="w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
+        writer.writeheader()
+        writer.writerows(rows)
+    logger.info("Updated EOD outcome for %s in %s", run_date, csv_path)
 
 
-def get_performance_stats(db_path: Path = DB_PATH) -> Dict[str, Any]:
-    """
-    Calculates forward-testing win rates and accuracy grouped by confidence level.
-    """
-    init_db(db_path)
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+def get_performance_stats(csv_path: Path = CSV_PATH) -> Dict[str, Any]:
+    """Calculates overall win rate and accuracy from the CSV ledger."""
+    init_storage(csv_path)
+    total_runs = 0
+    evaluated = 0
+    correct = 0
 
-        cursor.execute("SELECT COUNT(*) AS total FROM verdicts")
-        total_runs = cursor.fetchone()["total"]
+    with open(csv_path, mode="r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            total_runs += 1
+            if row["is_correct"] != "":
+                evaluated += 1
+                if row["is_correct"] == "1":
+                    correct += 1
 
-        cursor.execute(
-            """
-            SELECT 
-                confidence,
-                COUNT(*) as count,
-                AVG(is_correct) as win_rate
-            FROM verdicts
-            WHERE is_correct IS NOT NULL
-            GROUP BY confidence
-            """
-        )
-        confidence_breakdown = [dict(row) for row in cursor.fetchall()]
-
-        cursor.execute(
-            """
-            SELECT 
-                COUNT(*) as evaluated,
-                SUM(is_correct) as correct,
-                ROUND(AVG(is_correct) * 100, 1) as overall_win_rate
-            FROM verdicts
-            WHERE is_correct IS NOT NULL
-            """
-        )
-        overall = dict(cursor.fetchone())
-
-        cursor.execute(
-            """
-            SELECT
-                ROUND(AVG(CASE WHEN actual_direction = 'up' THEN 1.0 ELSE 0.0 END) * 100, 1) as always_bullish_win_rate
-            FROM verdicts
-            WHERE is_correct IS NOT NULL
-            """
-        )
-        baseline_row = cursor.fetchone()
-        always_bullish = baseline_row["always_bullish_win_rate"] if baseline_row else None
-
+    win_rate = round((correct / evaluated) * 100, 1) if evaluated > 0 else 0.0
     return {
         "total_runs": total_runs,
-        "overall": overall,
-        "by_confidence": confidence_breakdown,
-        "baselines": {
-            "always_bullish_win_rate": always_bullish
-        }
+        "evaluated": evaluated,
+        "correct": correct,
+        "win_rate_pct": win_rate,
     }

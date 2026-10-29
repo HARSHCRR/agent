@@ -1,201 +1,151 @@
 import argparse
 import json
 import logging
-import sys
+import time
 from datetime import datetime
 from typing import Any, Dict, Optional
 import pytz
+import schedule
+import yfinance as yf
 
-from config import MARKET_TIMEZONE
-from models import BriefingPack
+from config import MARKET_TIMEZONE, PREMARKET_TIME, MARKET_CLOSE_TIME
 from collector import build_pack
-from analysts import run_dual_analysts, MockLLMClient
+from analysts import run_dual_analysts
 from judge import (
-    MockJudgeLLMClient,
     verify_cases_with_retry,
     anonymize_and_randomize,
     evaluate_cases_blind,
     unblind_verdict,
 )
-from storage import save_run, record_eod_outcome, get_performance_stats
-from notifier import format_telegram_message, send_telegram_alert
+from storage import save_run, record_eod_outcome, get_performance_stats, CSV_PATH
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-logger = logging.getLogger("WorkflowOrchestrator")
+logger = logging.getLogger("MarketPipeline")
 
 
-def run_workflow(
-    target_date_str: Optional[str] = None,
-    send_telegram: bool = True,
-    replay_pack_path: Optional[str] = None,
-) -> Dict[str, Any]:
-    """
-    Executes the complete 5-stage Compound AI Workflow:
-    1. Briefing Pack Ingestion (09:15 ET)
-    2. Dual Adversarial Analysts (Bull vs Bear)
-    3. Citation Firewall & Retry Loop
-    4. Blind Anonymization & Randomization
-    5. Neutral Judge Arbitration (Gemini 3.8 Flash, Medium Thinking)
-    6. Unblinding, SQLite Ledger Persistence, and Telegram Dispatch
-    """
-    tz_et = pytz.timezone(MARKET_TIMEZONE)
-    if target_date_str:
-        target_date = datetime.strptime(target_date_str, "%Y-%m-%d").date()
-    else:
-        target_date = datetime.now(tz_et).date()
+def run_morning_workflow(target_date_str: Optional[str] = None) -> Dict[str, Any]:
+    """Runs the 09:15 ET pre-market debate and saves prediction to CSV."""
+    tz = pytz.timezone(MARKET_TIMEZONE)
+    now = datetime.now(tz)
+    run_date = target_date_str or now.strftime("%Y-%m-%d")
 
-    date_str = target_date.strftime("%Y-%m-%d")
-    logger.info(f"=== Starting Autonomous Pre-Market Workflow for {date_str} ===")
+    logger.info("=== Starting Morning Pre-Market Workflow for %s ===", run_date)
 
-    # STAGE 1: Collect Briefing Pack
-    if replay_pack_path:
-        logger.info(f"[Stage 1/6] Replay mode active: loading canned pack from {replay_pack_path}...")
-        with open(replay_pack_path, "r") as f:
-            pack = BriefingPack.model_validate_json(f.read())
-        llm_client = MockLLMClient()
-        judge_client = MockJudgeLLMClient()
-    else:
-        logger.info("[Stage 1/6] Ingesting market metrics, economic calendar, and news...")
-        pack = build_pack(target_date)
-        llm_client = None
-        judge_client = None
-    pack_text = pack.to_briefing_text()
-    logger.info(f"Briefing Pack compiled ({len(pack.get_valid_evidence_ids())} valid evidence tokens).")
+    # 1. Collect market data
+    pack = build_pack(run_date)
+    logger.info("Briefing Pack collected: %s", pack.date_et)
 
-    # STAGE 2: Run Dual Adversarial Analysts Concurrently
-    logger.info("[Stage 2/6] Launching concurrent Bull and Bear analyst agents...")
-    bull_case, bear_case = run_dual_analysts(pack, client=llm_client)
+    # 2. Run Bull & Bear analysts
+    bull_case, bear_case = run_dual_analysts(pack)
 
-    # STAGE 3: Citation Verification Firewall
-    logger.info("[Stage 3/6] Verifying evidence citations against Briefing Pack...")
-    b_case, r_case, is_valid = verify_cases_with_retry(pack, bull_case, bear_case, llm_client=llm_client)
+    # 3. Verify citations
+    bull_case, bear_case = verify_cases_with_retry(bull_case, bear_case, pack)
 
-    if not is_valid or b_case is None or r_case is None:
-        logger.error("Citation validation failed after retry. Falling back to SAFE NO-VERDICT.")
-        fallback_record = {
-            "verdict": "sideways",
-            "confidence": "low",
-            "blind_winner": "neither",
-            "unblinded_winner": "DATA_ERROR",
-            "mapping": {},
-            "deciding_factors": ["Citation verification failure: hallucinated evidence IDs detected"],
-            "reasoning": "Analyst cases contained invalid citations outside the verified briefing pack.",
-            "events_to_watch": [],
-            "caveats": "Data integrity check failed. No trading bias issued.",
-        }
-        row_id = save_run(date_str, pack_text, bull_case.model_dump(), bear_case.model_dump(), fallback_record)
-        if send_telegram:
-            msg = format_telegram_message(date_str, fallback_record)
-            send_telegram_alert(msg)
-        return fallback_record
+    # 4. Anonymize and randomly swap cases
+    case_x, case_y, mapping = anonymize_and_randomize(bull_case, bear_case)
 
-    # STAGE 4: Blind Anonymization & Order Randomization
-    logger.info("[Stage 4/6] Anonymizing analyst cases and randomizing presentation order...")
-    case_x, case_y, mapping = anonymize_and_randomize(b_case, r_case)
-    logger.info(f"Blind mapping established: Case X={mapping['X']}, Case Y={mapping['Y']}")
+    # 5. Blind Judge evaluates
+    judge_output = evaluate_cases_blind(pack, case_x, case_y)
+    unblinded_result = unblind_verdict(judge_output, mapping)
 
-    # STAGE 5: Neutral Blind Judge Arbitration
-    logger.info("[Stage 5/6] Submitting cases to Neutral Blind Judge...")
-    judge_output = evaluate_cases_blind(pack, case_x, case_y, client=judge_client)
+    # 6. Save prediction to CSV
+    save_run(run_date, unblinded_result)
 
-    # STAGE 6: Unblind, Persist & Notify
-    logger.info("[Stage 6/6] Unblinding verdict, persisting to SQLite, and dispatching notification...")
-    final_record = unblind_verdict(judge_output, mapping)
+    print("\n" + "=" * 50)
+    print(f" MORNING PRE-MARKET VERDICT: {run_date}")
+    print("=" * 50)
+    print(f" Verdict:      {unblinded_result['verdict'].upper()}")
+    print(f" Confidence:   {unblinded_result['confidence'].upper()}")
+    print(f" Winning Case: {unblinded_result['unblinded_winner']}")
+    print(f" Reasoning:    {unblinded_result['reasoning']}")
+    print(f" Saved to:     {CSV_PATH}")
+    print("=" * 50 + "\n")
 
-    # Save to SQLite database
-    row_id = save_run(
-        run_date=date_str,
-        pack_text=pack_text,
-        bull_case=b_case.model_dump(),
-        bear_case=r_case.model_dump(),
-        unblinded_result=final_record,
-    )
-    logger.info(f"Execution record saved to database (ID: {row_id}).")
-
-    # Send Telegram alert
-    if send_telegram:
-        alert_msg = format_telegram_message(date_str, final_record)
-        send_telegram_alert(alert_msg)
-
-    logger.info(f"Workflow Complete | Verdict: {final_record['verdict'].upper()} | Confidence: {final_record['confidence'].upper()} | Winner: {final_record['unblinded_winner']}")
-    return final_record
+    return unblinded_result
 
 
-def evaluate_eod(date_str: str) -> None:
-    """Evaluates actual EOD market close return (at 16:00 ET) and records ground-truth accuracy."""
-    import yfinance as yf
+def run_eod_reconciliation(target_date_str: Optional[str] = None) -> None:
+    """Runs at 16:00 ET market close to fetch QQQ performance and update CSV accuracy."""
+    tz = pytz.timezone(MARKET_TIMEZONE)
+    now = datetime.now(tz)
+    run_date = target_date_str or now.strftime("%Y-%m-%d")
 
-    logger.info(f"Evaluating EOD outcome for {date_str}...")
-    qqq = yf.Ticker("QQQ")
-    hist = qqq.history(period="5d")
-    if len(hist) < 2:
-        logger.error("Insufficient price data to evaluate EOD outcome.")
-        return
+    logger.info("=== Reconciling Market Close for %s ===", run_date)
 
-    latest = hist.iloc[-1]
-    prev = hist.iloc[-2]
-    ret_pct = ((float(latest["Close"]) - float(prev["Close"])) / float(prev["Close"])) * 100
+    try:
+        ticker = yf.Ticker("QQQ")
+        hist = ticker.history(period="5d")
+        if hist.empty:
+            logger.error("No price data retrieved for QQQ")
+            return
 
-    if ret_pct > 0.20:
-        direction = "up"
-    elif ret_pct < -0.20:
-        direction = "down"
-    else:
-        direction = "flat"
+        today_bar = hist.iloc[-1]
+        open_p = float(today_bar["Open"])
+        close_p = float(today_bar["Close"])
+        pct_change = round(((close_p - open_p) / open_p) * 100, 2)
 
-    record_eod_outcome(date_str, round(ret_pct, 2), direction)
-    logger.info(f"EOD Evaluated | Actual Return: {ret_pct:+.2f}% | Direction: {direction.upper()}")
+        if pct_change > 0.15:
+            direction = "up"
+        elif pct_change < -0.15:
+            direction = "down"
+        else:
+            direction = "flat"
+
+        record_eod_outcome(run_date, pct_change, direction)
+        print(f"\n[EOD Reconciled] {run_date} | QQQ: {pct_change}% ({direction.upper()}) | Saved to {CSV_PATH}\n")
+    except Exception as e:
+        logger.error("Error during EOD reconciliation: %s", e)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="NAS100 Compound AI Workflow Runner")
-    parser.add_argument("--date", type=str, help="Run for specific date (YYYY-MM-DD)")
-    parser.add_argument("--replay", type=str, help="Replay pipeline using canned briefing_pack.json offline")
-    parser.add_argument("--no-telegram", action="store_true", help="Suppress Telegram alert dispatch")
-    parser.add_argument("--stats", action="store_true", help="Display forward-testing performance statistics")
-    parser.add_argument("--eod", type=str, help="Evaluate post-market outcome for date (YYYY-MM-DD)")
+def print_stats() -> None:
+    """Prints the historical accuracy from the CSV sheet."""
+    stats = get_performance_stats()
+    print("\n" + "=" * 45)
+    print("     PRE-MARKET PREDICTION ACCURACY (CSV)    ")
+    print("=" * 45)
+    print(f" Total Days Logged:    {stats['total_runs']}")
+    print(f" Days Evaluated:       {stats['evaluated']}")
+    print(f" Correct Predictions:  {stats['correct']}")
+    print(f" Overall Win Rate:     {stats['win_rate_pct']}%")
+    print(f" CSV Location:         {CSV_PATH}")
+    print("=" * 45 + "\n")
+
+
+def start_scheduler() -> None:
+    """Runs continuously and automatically triggers at market open (09:15 ET) and close (16:00 ET)."""
+    print("\n" + "=" * 60)
+    print(" AUTOMATIC SCHEDULER STARTED (US Eastern Time)")
+    print(f" - Morning Pre-Market Debate:  Every trading day at {PREMARKET_TIME} ET")
+    print(f" - EOD Accuracy Evaluation:   Every trading day at {MARKET_CLOSE_TIME} ET")
+    print(f" - Results CSV:               {CSV_PATH}")
+    print(" Press Ctrl+C to stop.")
+    print("=" * 60 + "\n")
+
+    schedule.every().day.at("09:15").do(run_morning_workflow)
+    schedule.every().day.at("16:00").do(run_eod_reconciliation)
+
+    while True:
+        schedule.run_pending()
+        time.sleep(30)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Multi-Agent Market Regime Pipeline")
+    parser.add_argument("--date", type=str, help="Run morning debate for specific date (YYYY-MM-DD)")
+    parser.add_argument("--eod", type=str, help="Reconcile market close for specific date (YYYY-MM-DD)")
+    parser.add_argument("--stats", action="store_true", help="Print overall prediction accuracy from CSV")
+    parser.add_argument("--auto", action="store_true", help="Start automatic scheduler for 09:15 ET and 16:00 ET")
 
     args = parser.parse_args()
 
     if args.stats:
-        stats = get_performance_stats()
-        print("\n=== FORWARD-TEST PERFORMANCE DASHBOARD ===")
-        print(f"Total Pre-Market Runs: {stats['total_runs']}")
-        overall = stats.get("overall", {})
-        n = overall.get("evaluated", 0)
-        correct = overall.get("correct", 0)
-        win_rate = overall.get("overall_win_rate", 0.0)
-        print(f"Evaluated Runs (N):              {n}")
-        print(f"Correct Predictions:             {correct}")
-        print(f"Overall Directional Win Rate:    {win_rate}% (N={n})")
-        
-        baselines = stats.get("baselines", {})
-        always_bull = baselines.get("always_bullish_win_rate")
-        print(f"Baseline (Always Bullish):       {always_bull if always_bull is not None else 'N/A'}% (N={n})")
-
-        print("\nBreakdown by Confidence Level:")
-        for row in stats.get("by_confidence", []):
-            count = row["count"]
-            c_win = row["win_rate"] * 100.0 if row["win_rate"] is not None else 0.0
-            print(f"  • Confidence: {row['confidence'].upper():<7} | N = {count:<3} | Win Rate: {c_win:.1f}%")
-        
-        if n < 100:
-            print("\n[!] NOTE: Sample size N < 100 is too small to draw statistically significant conclusions.")
-        print("==========================================\n")
-        sys.exit(0)
-
-    if args.eod:
-        evaluate_eod(args.eod)
-        sys.exit(0)
-
-    # Standard run
-    res = run_workflow(target_date_str=args.date, send_telegram=not args.no_telegram, replay_pack_path=args.replay)
-    print("\n--- FINAL WORKFLOW OUTPUT ---")
-    print(json.dumps(res, indent=2))
-
-
-if __name__ == "__main__":
-    main()
+        print_stats()
+    elif args.eod:
+        run_eod_reconciliation(args.eod)
+    elif args.auto:
+        start_scheduler()
+    else:
+        run_morning_workflow(args.date)
