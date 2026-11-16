@@ -10,8 +10,7 @@ __pycache__/
 *$py.class
 *.so
 
-# Data and SQLite databases
-/data/
+# SQLite databases
 *.db
 *.sqlite3
 
